@@ -1,0 +1,11 @@
+services:
+  garmin-coach:
+    build: .
+    image: garmin-coach:latest
+    container_name: garmin-coach
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8765:8765"          # LAN only: do not expose to the internet
+    volumes:
+      - ./data:/data         # garmin.db, fit/, tokens/, athlete.md

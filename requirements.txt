@@ -1,0 +1,4 @@
+garminconnect==0.3.16
+mcp==1.27.0
+fitdecode==0.11.0
+uvicorn>=0.30
