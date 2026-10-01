@@ -326,6 +326,7 @@ when `sync_status` reports `auth_required`.
 - Workouts: running only for now (no strength, cycling or swimming).
 - Works with Claude Desktop while your computer is on and on the same network as the server.
   Remote access (claude.ai web/mobile) would require HTTPS and proper authentication: not included.
+- This is just a personal project that I wanted to share with the community. Enjoy!
 
 ---
 
