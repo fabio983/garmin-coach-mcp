@@ -1,17 +1,22 @@
 # garmin-coach-mcp
 
-**Let Claude read your Garmin running data and put workouts on your watch.**
+**Let Claude read your Garmin running data — and, if you want, put workouts on your watch.**
 
 `garmin-coach-mcp` is a small self-hosted service that keeps a local archive of your Garmin Connect
 activities (summaries, laps and second-by-second data from the original FIT files) and exposes it to
 [Claude Desktop](https://claude.ai/download) through the [Model Context Protocol](https://modelcontextprotocol.io).
-It can also create structured workouts and schedule them in your Garmin calendar.
+
+Data is read through Garmin's **official [Connect Personal API](https://developer.garmin.com/gc-developer-program/personal/personal-api)**,
+which is **read-only**. Writing to Garmin — creating structured workouts and scheduling them in your calendar —
+is available through an **optional community module** that you enable explicitly
+(see [Write access (optional)](#write-access-optional)).
 
 No more exporting CSV files after every run: you just ask.
 
 > *"Sync and analyse this morning's run: how did my heart rate drift in the last 5 km?"*
 > *"Compare my long runs of the last 8 weeks: pace, heart rate, cadence."*
-> *"Put Wednesday's session on my watch: 15' easy, 3 × 2 km at 5:40–5:45 with 2' jog, 10' cool-down."*
+> *"Did I execute Wednesday's planned session as prescribed?"*
+> *"Put Friday's session on my watch: 15' easy, 3 × 2 km at 5:40–5:45 with 2' jog, 10' cool-down."* (write access)
 
 🇮🇹 [Leggi in italiano](README.it.md)
 
@@ -20,10 +25,12 @@ No more exporting CSV files after every run: you just ask.
 ## Contents
 
 - [Features](#features)
+- [Read-only by default, write access optional](#read-only-by-default-write-access-optional)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Connecting Claude Desktop](#connecting-claude-desktop)
+- [Write access (optional)](#write-access-optional)
 - [Personal notes for Claude](#personal-notes-for-claude)
 - [Tools](#tools)
 - [Structured workouts](#structured-workouts)
@@ -38,25 +45,44 @@ No more exporting CSV files after every run: you just ask.
 
 ## Features
 
-**Your history, always available**
-- Imports your whole activity history once, then syncs new activities every 30 minutes (or on demand).
+**Your history, always available** (official API)
+- Imports your activity history once, then syncs new activities every 30 minutes (or on demand).
 - For every run it stores the original FIT file and extracts laps and second-by-second records:
   pace, heart rate, cadence, running dynamics (ground contact time and balance, vertical oscillation and ratio,
   step length), power, altitude, GPS.
-- Grade-adjusted pace per lap and the shoes assigned in Garmin Connect.
+- Links each activity to the planned workout it was executed from.
 
-**Analysis-ready tools for Claude**
+**Analysis-ready tools for Claude** (official API)
 - Single activity: summary, laps (same content as Garmin's per-lap CSV), time in heart-rate bands,
-  heart-rate recovery at 60".
+  heart-rate recovery at 60", planned workout.
 - Time series at any resolution, for cardiac drift, blow-ups, interval analysis.
 - Weekly summaries: volume, long run, training load, intensity distribution.
 - Read-only SQL for anything else (trends over months, comparisons, records).
 - Annotations for what Garmin doesn't know or gets wrong: real temperature, treadmill, shoes, RPE, notes.
 
-**Workouts on your watch**
+**Workouts on your watch** (optional community module)
 - Claude writes structured running workouts (warm-up, repeats, recoveries, cool-down, pace or heart-rate targets)
   and schedules them in your Garmin calendar: they appear on the watch at the next sync.
 - Always preview first, upload only after your OK.
+- Also adds per-lap grade-adjusted pace and the shoes assigned in Garmin Connect.
+
+---
+
+## Read-only by default, write access optional
+
+| | Official Personal API (default) | Community module (optional) |
+|---|---|---|
+| Provided by | Garmin | [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) (unofficial API) |
+| Access | **Read-only** | Read **and write** |
+| Setup | A Personal API key in `.env` | `ENABLE_GARMINCONNECT=true` + interactive login (MFA supported) |
+| Activities, original FIT files, laps, per-second data | ✅ | (used only if no API key is set) |
+| Planned workout linked to each activity | ✅ | – |
+| Per-lap grade-adjusted pace, shoes from Garmin Connect | – | ✅ |
+| Create / schedule / delete structured workouts | ❌ not available | ✅ |
+| Stability | Official, documented | May break if Garmin changes its private API |
+
+If you only want Claude to analyse your runs, the official API is all you need.
+Enable the community module only if you also want Claude to write workouts to Garmin.
 
 ---
 
@@ -64,16 +90,16 @@ No more exporting CSV files after every run: you just ask.
 
 ```mermaid
 flowchart LR
-    GC[(Garmin Connect)] -- python-garminconnect --> S
-    subgraph Server["Docker container (your homelab / NAS / PC)"]
+    PA[(Garmin Connect<br/>Personal API<br/>official, read-only)] -- activities + FIT --> S
+    GC[(Garmin Connect<br/>community module<br/>optional, read/write)] -. workouts, GAP, shoes .- S
+    subgraph Server["Docker container (homelab / NAS / PC)"]
         S[Sync job] --> DB[(SQLite + FIT files)]
         DB --> M[MCP server :8765/mcp]
-        M -- workouts --> GC
     end
+    M -. create/schedule workouts .-> GC
     CD[Claude Desktop] -- mcp-remote, LAN + token --> M
 ```
 
-- The container talks to Garmin Connect using your own account (same login flow as the Garmin Connect mobile app).
 - Everything is stored locally in `./data`: nothing is sent anywhere else.
 - Claude Desktop connects to the container over your local network through
   [`mcp-remote`](https://github.com/geelen/mcp-remote), authenticated with a token.
@@ -86,7 +112,7 @@ flowchart LR
 |---|---|
 | Server (any always-on machine: homelab VM, NAS, Raspberry Pi 4/5, PC) | Docker + Docker Compose |
 | Your computer | [Claude Desktop](https://claude.ai/download) and [Node.js](https://nodejs.org) LTS (for `npx`) |
-| Garmin | A Garmin Connect account (MFA supported) |
+| Garmin | A Garmin Connect account and a [Personal API key](https://developer.garmin.com/gc-developer-program/personal/personal-faq/) |
 
 The server and the computer must be on the same network (or reachable via VPN).
 
@@ -101,50 +127,42 @@ git clone https://github.com/fabio983/garmin-coach-mcp.git
 cd garmin-coach-mcp
 ```
 
-### 2. Configure
+### 2. Create a Garmin Personal API key
+
+1. Sign in to Garmin Connect on the web and open
+   **Settings → Personal API** ([direct link](https://connect.garmin.com/app/settings/personalApiToken)).
+2. Read and accept the terms, choose an expiry (30 days to 1 year) and create the key.
+3. Copy it right away: Garmin shows it only once.
+
+### 3. Configure
 
 ```bash
 cp .env.example .env
-openssl rand -hex 32        # copy the output into MCP_TOKEN in .env
-nano .env                   # set TZ, BACKFILL_FROM, HR_BANDS...
+openssl rand -hex 32        # copy the output into MCP_TOKEN
+nano .env                   # paste the key in GARMIN_PERSONAL_API_KEY, set TZ, BACKFILL_FROM, HR_BANDS...
 ```
 
 See [Configuration](#configuration) for all options.
 
-### 3. Build
+### 4. Build and start
 
 ```bash
 docker compose build
-```
-
-### 4. Log in to Garmin (once)
-
-```bash
-docker compose run --rm garmin-coach login
-```
-
-Enter email, password and, if enabled, the MFA code. Tokens are saved in `data/tokens/`;
-your password is not stored.
-
-> Warnings like `mobile+cffi returned 429` during login are normal: the library tries several login
-> strategies and one of the next ones succeeds. What matters is the final `Login OK`.
-
-### 5. Start
-
-```bash
 docker compose up -d
 docker compose logs -f
 ```
 
-The first start imports your history since `BACKFILL_FROM`. Each run takes about 7 seconds
-(FIT file + splits + gear, with pauses to respect Garmin's rate limits): ~300 runs ≈ 35 minutes.
-You will see one `Details <id> (running) ok` line per run and a final `Auto sync: ok` line.
+The first start imports your history since `BACKFILL_FROM` (each run takes a few seconds, with pauses
+between requests). You will see one `Details <id> (running) ok` line per run and a final `Auto sync: ok` line.
 
 Check that the server answers from your computer:
 
 ```bash
 curl http://SERVER-IP:8765/healthz      # → ok
 ```
+
+Optional: `tools/probe_personal_api.py` checks your key and what the API returns,
+see [tools/README.md](tools/README.md).
 
 ---
 
@@ -184,6 +202,61 @@ arguments on Windows.
 
 ---
 
+## Write access (optional)
+
+The official Personal API is **read-only**: with it alone Claude can analyse your data but cannot create
+or schedule workouts. To add write access, enable the community module. It uses
+[python-garminconnect](https://github.com/cyberjunky/python-garminconnect), which talks to Garmin Connect's
+private API with the same login flow as the mobile app.
+
+> **Before enabling it:** it is not an official Garmin interface, it can stop working whenever Garmin changes
+> its private API, and it logs in with your account credentials. Use it only with your own account.
+
+### Enable it, step by step
+
+1. **Edit `.env`** on the server:
+
+   ```bash
+   ENABLE_GARMINCONNECT=true
+   ```
+
+2. **Recreate the container** so it reads the new setting (a plain `restart` does not reload `.env`):
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. **Log in once** to Garmin Connect from the container:
+
+   ```bash
+   docker compose run --rm garmin-coach login
+   ```
+
+   Enter email, password and, if enabled, the MFA code. Tokens are saved in `data/tokens/`; the password is not
+   stored. Warnings like `mobile+cffi returned 429` are normal as long as the command ends with `Login OK`.
+
+4. **Restart the service** so it picks up the new tokens:
+
+   ```bash
+   docker compose restart
+   ```
+
+5. **Restart Claude Desktop** (quit it completely, then reopen).
+
+6. **Check it** in a new chat: ask *"What's the status of my Garmin archive?"*: it should report
+   `write access (community module): enabled`. Then ask *"Which workouts are in my Garmin calendar?"*.
+
+From now on Claude can create workouts (always showing a preview first), and the next syncs also add
+grade-adjusted pace per lap and the shoes assigned in Garmin Connect.
+
+### Disable it
+
+Set `ENABLE_GARMINCONNECT=false`, run `docker compose up -d` and, if you want, delete
+`data/tokens/garmin_tokens.json`. The workout tools will then reply that write access is disabled;
+reading through the official API is unaffected.
+
+---
+
 ## Personal notes for Claude
 
 Claude works better when it knows your context: which sensors you use, your heart-rate zones,
@@ -202,24 +275,29 @@ so it is never committed.
 
 ## Tools
 
-| Tool | What it does |
-|---|---|
-| `sync_garmin` | Fetch new activities now (`full=true` re-imports everything in background) |
-| `sync_status` | Archive counts, period covered, result of the latest syncs |
-| `list_activities` | Activities in a date range, filterable by type |
-| `get_activity` | Summary, laps, HRR60, time in HR bands, annotations (`latest`, a date or an id) |
-| `get_activity_series` | Second-by-second data averaged every N seconds, optionally in a time window |
-| `training_summary` | Weekly summary: runs, km, time, pace, longest run, load, HR distribution |
-| `annotate_activity` | Save real temperature, humidity, treadmill, shoes, session type, RPE, HRR, notes |
-| `query_sql` | Read-only SQL on the archive (schema in the tool description) |
-| `create_workout` | Build a structured running workout; preview → confirm → upload and schedule |
-| `get_workout` | Show the steps of a workout stored in Garmin Connect |
-| `list_workouts` | Scheduled workouts and latest ones in your library |
-| `delete_workout` | Unschedule and/or delete a workout (only when you ask) |
+| Tool | What it does | Needs |
+|---|---|---|
+| `sync_garmin` | Fetch new activities now (`full=true` re-imports everything in background) | official API |
+| `sync_status` | Data sources, archive counts, period covered, result of the latest syncs | – |
+| `list_activities` | Activities in a date range, filterable by type | – |
+| `get_activity` | Summary, laps, HRR60, time in HR bands, planned workout, annotations (`latest`, a date or an id) | – |
+| `get_activity_series` | Second-by-second data averaged every N seconds, optionally in a time window | – |
+| `training_summary` | Weekly summary: runs, km, time, pace, longest run, load, HR distribution | – |
+| `annotate_activity` | Save real temperature, humidity, treadmill, shoes, session type, RPE, HRR, notes | – |
+| `query_sql` | Read-only SQL on the archive (schema in the tool description) | – |
+| `create_workout` | Build a structured running workout; preview → confirm → upload and schedule | ✍️ community module |
+| `get_workout` | Show the steps of a workout stored in Garmin Connect | ✍️ community module |
+| `list_workouts` | Scheduled workouts and latest ones in your library | ✍️ community module |
+| `delete_workout` | Unschedule and/or delete a workout (only when you ask) | ✍️ community module |
+
+Tools marked – work on the local archive. Without the community module the ✍️ tools reply that write access
+is disabled and explain how to enable it (`create_workout` still shows the preview).
 
 ---
 
 ## Structured workouts
+
+*Requires [write access](#write-access-optional).*
 
 Claude builds workouts from a simple step list. You don't need to write it yourself:
 describe the session in plain words and Claude translates it. For reference:
@@ -257,20 +335,25 @@ Use `replace_workout_id` to rewrite an existing workout while keeping its calend
 
 ## Configuration
 
-All settings live in `.env` (see [`.env.example`](.env.example)).
+All settings live in `.env` (see [`.env.example`](.env.example)). After changing it run `docker compose up -d`.
 
 | Variable | Default | Description |
 |---|---|---|
 | `MCP_TOKEN` | – | Bearer token required by the MCP endpoint. **Set it.** |
+| `GARMIN_PERSONAL_API_KEY` | – | Official Personal API key (read-only data source). **Set it.** |
+| `ENABLE_GARMINCONNECT` | `false` | Enable the optional community module (write access, GAP per lap, shoes) |
+| `GARMIN_EMAIL` / `GARMIN_PASSWORD` | – | Community module only: automatic re-login (not usable with MFA) |
 | `TZ` | – | Timezone, e.g. `Europe/Rome` |
 | `BACKFILL_FROM` | `2024-01-01` | Start date of the first import |
 | `SYNC_INTERVAL_MIN` | `30` | Background sync interval (0 = on demand only) |
 | `REQUEST_DELAY_S` | `1.5` | Pause between Garmin requests |
 | `HR_BANDS` | `135,150,160,170` | Lower bounds of HR bands 2..N for time-in-zone |
 | `DETAIL_TYPE_MATCH` | `run` | Activity types (substring of Garmin `typeKey`) for which FIT/laps/records are downloaded |
-| `GARMIN_EMAIL` / `GARMIN_PASSWORD` | – | Optional, for automatic re-login (not usable with MFA) |
 | `ATHLETE_FILE` | `/data/athlete.md` | Personal notes appended to the instructions for Claude |
 | `MCP_PORT` | `8765` | Port inside the container |
+
+If `GARMIN_PERSONAL_API_KEY` is empty and the community module is enabled, activities are read through the
+community module instead (the behaviour of version 0.1).
 
 ---
 
@@ -279,14 +362,15 @@ All settings live in `.env` (see [`.env.example`](.env.example)).
 | Task | Command |
 |---|---|
 | Update | `git pull && docker compose up -d --build`, then restart Claude Desktop |
-| Re-login (tokens expired, `auth_required`) | `docker compose run --rm garmin-coach login && docker compose restart` |
+| Personal API key expired (`auth_required` in `sync_status`) | Create a new key in Garmin Connect, update `.env`, `docker compose up -d` |
+| Community module tokens expired | `docker compose run --rm garmin-coach login && docker compose restart` |
+| Import older history | `docker compose exec garmin-coach python -m app sync --since 2017-01-01` |
 | Manual sync | `docker compose exec garmin-coach python -m app sync [--since 2026-01-01] [--full]` |
 | Rebuild laps/records from FIT files | `docker compose exec garmin-coach python -m app reparse` |
 | Backup | Copy the `data/` folder |
 | Logs | `docker compose logs -f` |
 
-Garmin tokens last several months. With MFA enabled the re-login is interactive; Claude will tell you
-when `sync_status` reports `auth_required`.
+Garmin emails you about a week before the Personal API key expires.
 
 ---
 
@@ -294,35 +378,38 @@ when `sync_status` reports `auth_required`.
 
 | Symptom | Cause / fix |
 |---|---|
-| `429` warnings during login | Normal if the login ends with `Login OK`. If it fails, wait an hour: Garmin rate-limits login attempts per IP. Don't retry in a loop. |
+| `sync_status`: `auth_required`, *Personal API rejected the key* | Key expired, revoked or mistyped. Create a new one and update `.env`, then `docker compose up -d`. |
+| Claude says workouts need write access | Expected with the official API only (read-only). Enable the [community module](#write-access-optional). |
+| `429` warnings during `login` | Normal if the login ends with `Login OK`. If it fails, wait an hour: Garmin rate-limits login attempts per IP. |
 | `curl .../healthz` returns `unauthorized` | Wrong path (only `/healthz` is open without token). |
 | Claude: *"Unexpected non-whitespace character after JSON"* | The block was pasted outside the main `{ }` of `claude_desktop_config.json`. Validate the file with any JSON validator. |
 | `garmin-coach` not listed in Settings → Developer | Invalid config file, or Claude was open while you saved it. Quit Claude (tray too), fix, reopen. |
-| Server listed as failed, log says `npx` not found | Node.js missing, or installed while Claude was open. Reboot Claude, or use the full path (`C:\\Program Files\\nodejs\\npx.cmd`). |
+| Server listed as failed, log says `npx` not found | Node.js missing, or installed while Claude was open. Restart Claude, or use the full path (`C:\\Program Files\\nodejs\\npx.cmd`). |
 | New tools not visible after an update | Restart Claude Desktop and open a new chat. |
-| `rate_limited` in `sync_status` | Garmin returned 429 during sync. It resumes automatically at the next run; increase `REQUEST_DELAY_S` if frequent. |
+| A change in `.env` has no effect | Use `docker compose up -d`, not `restart`. |
 
 ---
 
 ## Data, privacy and security
 
-- All data stays in `./data` on your server: SQLite database, original FIT files, Garmin tokens, your notes.
+- All data stays in `./data` on your server: SQLite database, original FIT files, tokens, your notes.
   `data/` and `.env` are excluded by `.gitignore`.
-- The Garmin tokens in `data/tokens/` give access to your Garmin account: protect that folder like a password.
+- `.env` contains your Personal API key, and `data/tokens/` the bearer token and (if enabled) the community
+  module tokens: protect them like passwords.
 - The MCP endpoint is plain HTTP protected by a bearer token: **keep it on your LAN** (or behind a VPN).
   Do not expose port 8765 to the internet.
-- `query_sql` opens the database read-only. The only writes Claude can make are annotations
-  and, after your confirmation, workouts in Garmin Connect.
+- `query_sql` opens the database read-only. The only writes Claude can make are annotations in the local
+  archive and, with the community module enabled and after your confirmation, workouts in Garmin Connect.
 
 ---
 
 ## Limitations and disclaimer
 
-- This project is **not affiliated with or endorsed by Garmin**. It uses the unofficial Garmin Connect API
-  through [python-garminconnect](https://github.com/cyberjunky/python-garminconnect), like many other open-source
-  projects. Garmin may change it at any time and break the login or the data access.
-  Your archive stays available locally even if that happens.
-- Use it with your own account only and with reasonable request rates.
+- This project is **not affiliated with or endorsed by Garmin**.
+- The official Personal API is **read-only** and meant for personal use with your own account.
+  It does not expose per-lap grade-adjusted pace, shoes or per-activity VO2max.
+- Write access relies on the unofficial API through the community module: Garmin may change it at any time.
+  Your local archive stays available even if that happens.
 - Workouts: running only for now (no strength, cycling or swimming).
 - Works with Claude Desktop while your computer is on and on the same network as the server.
   Remote access (claude.ai web/mobile) would require HTTPS and proper authentication: not included.
@@ -336,7 +423,8 @@ This project stands on the shoulders of these open-source projects:
 
 | Project | Role | License |
 |---|---|---|
-| [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) by cyberjunky | Garmin Connect API wrapper and login | MIT |
+| [garmin-connect-personal-api-python](https://github.com/garmin/connect-personal-api-python) by Garmin | Official Personal API client (read-only data source) | Apache-2.0 |
+| [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) by cyberjunky | Optional community module (write access) | MIT |
 | [fitdecode](https://github.com/polyvertex/fitdecode) by polyvertex | FIT file parsing | MIT |
 | [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) | MCP server | MIT |
 | [Uvicorn](https://github.com/encode/uvicorn) | ASGI server | BSD-3-Clause |

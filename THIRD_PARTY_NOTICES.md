@@ -7,10 +7,14 @@ projects, each distributed under its own license. Many thanks to their authors a
 
 | Project | Used for | License |
 |---|---|---|
-| [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) by Ron Klinkien (cyberjunky) | Garmin Connect login and API access (activities, FIT download, workouts, calendar) | MIT |
+| [garmin-connect-personal-api-python](https://github.com/garmin/connect-personal-api-python) by Garmin Ltd. or its subsidiaries | Official Garmin Connect Personal API client: read-only data source (activity search, original FIT download, planned workout link) | Apache-2.0 |
+| [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) by Ron Klinkien (cyberjunky) | Optional community module, active only with `ENABLE_GARMINCONNECT=true`: write access (structured workouts, calendar), per-lap grade-adjusted pace, shoes | MIT |
 | [fitdecode](https://github.com/polyvertex/fitdecode) by Jean-Charles Lefebvre (polyvertex) | Parsing of the original FIT files (laps, per-second records, running dynamics) | MIT |
 | [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) by Anthropic, PBC and contributors | MCP server (FastMCP, streamable HTTP transport) | MIT |
 | [Uvicorn](https://github.com/encode/uvicorn) by Encode OSS Ltd. | ASGI web server | BSD-3-Clause |
+
+garmin-connect-personal-api-python is used unmodified, as a dependency installed from PyPI; its Apache-2.0
+license text is included in the package distribution.
 
 ## Notable transitive dependencies
 
@@ -19,7 +23,7 @@ Installed automatically by the packages above.
 | Project | Pulled in by | License |
 |---|---|---|
 | [curl_cffi](https://github.com/lexiforest/curl_cffi) | python-garminconnect | MIT |
-| [Requests](https://github.com/psf/requests) | python-garminconnect | Apache-2.0 |
+| [Requests](https://github.com/psf/requests) | garmin-connect-personal-api-python, python-garminconnect | Apache-2.0 |
 | [ua-generator](https://github.com/iamdual/ua-generator) | python-garminconnect | Apache-2.0 |
 | [Pydantic](https://github.com/pydantic/pydantic) | MCP Python SDK | MIT |
 | [Starlette](https://github.com/encode/starlette) | MCP Python SDK | BSD-3-Clause |
@@ -37,6 +41,12 @@ Installed automatically by the packages above.
 |---|---|---|
 | [Python](https://www.python.org) (`python:3.12-slim` Docker image) | Runtime | PSF License (image also contains Debian packages under their own licenses) |
 | [SQLite](https://sqlite.org) | Local database | Public domain |
+
+## Test fixtures
+
+| File | Source | License |
+|---|---|---|
+| `tests/sample_run.fit` | `garmin-fenix-5-run.fit` from the [fitdecode](https://github.com/polyvertex/fitdecode) test suite | MIT |
 
 ## Trademarks
 

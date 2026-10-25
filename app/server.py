@@ -20,6 +20,9 @@ log = logging.getLogger(__name__)
 
 BASE_INSTRUCTIONS = """\
 Running data from the athlete's Garmin Connect account, archived locally (SQLite + original FIT files).
+Data is read through the official Garmin Connect Personal API, which is READ-ONLY.
+Writing to Garmin (structured workouts) requires the optional community module (ENABLE_GARMINCONNECT);
+when it is disabled the workout tools explain how to enable it.
 - If the athlete talks about a run they just finished, call `sync_garmin` first to fetch it.
 - Watch temperature is usually unreliable (body heat): prefer the real temperature the athlete gives you
   and store it with `annotate_activity`.
@@ -163,10 +166,12 @@ def _hrr(conn, aid: int, laps) -> dict | None:
 
 
 def _garmin_or_error():
+    """Community module client (write access) or an explanatory message."""
     try:
         return garmin.client(), None
-    except garmin.AuthRequired as e:
+    except (garmin.AuthRequired, garmin.Disabled) as e:
         return None, str(e)
+
 
 
 # ---------------------------------------------------------------- activity tools
@@ -202,7 +207,10 @@ def sync_status() -> str:
             "sum(has_details=-1) failed, min(start_local) first, max(start_local) last "
             "FROM activities").fetchone()
         logs = conn.execute("SELECT * FROM sync_log ORDER BY id DESC LIMIT 5").fetchall()
-    out = [f"activities: {c['n']} (runs: {c['runs']}, with FIT/laps: {c['det']}, "
+    src = config.read_source()
+    out = [f"read source: {'official Personal API (read-only)' if src == 'official' else src or 'NOT CONFIGURED'}",
+           f"write access (community module): {'enabled' if config.ENABLE_GARMINCONNECT else 'disabled'}",
+           f"activities: {c['n']} (runs: {c['runs']}, with FIT/laps: {c['det']}, "
            f"failed downloads: {c['failed']})",
            f"period: {c['first']} → {c['last']}",
            f"sync running: {'yes' if sync._lock.locked() else 'no'}", "latest syncs:"]
@@ -264,6 +272,8 @@ def get_activity(activity_id: str = "latest", include_laps: bool = True) -> str:
             f"{r1(act['aerobic_te'])} anaerobic {r1(act['anaerobic_te'])} | load {r1(act['training_load'], 0)} | "
             f"VO2max {r1(act['vo2max'], 0)} | Garmin shoes: {act['gear'] or '-'}",
         ]
+        if act["planned_workout"]:
+            out.append(f"planned workout: {act['planned_workout']}")
         if ann:
             fields = {k: ann[k] for k in ann.keys() if k not in ("activity_id", "updated_at")
                       and ann[k] is not None}
@@ -432,7 +442,8 @@ def query_sql(sql: str, max_rows: int = 300) -> str:
     - activities(activity_id, start_local, start_gmt, name, type_key, distance_m, duration_s, moving_s,
       elapsed_s, avg_speed[m/s], avg_hr, max_hr, avg_cadence[steps/min], avg_power, elev_gain, elev_loss,
       calories, aerobic_te, anaerobic_te, training_load, vo2max, avg_gct_ms, avg_vo_cm, avg_vratio,
-      avg_stride_m, gear, has_details, fit_path, raw_json[full Garmin JSON: use json_extract])
+      avg_stride_m, gear, has_details, fit_path, source, planned_workout, planned_workout_json,
+      raw_json[full Garmin JSON: use json_extract])
     - laps(activity_id, lap_index, start_time, start_offset_s, trigger, intensity, elapsed_s, timer_s,
       distance_m, avg_speed, max_speed, gap_speed, avg_hr, max_hr, avg_cadence, max_cadence, avg_power,
       max_power, gct_ms, gct_bal_left, vo_cm, vratio, step_len_m, ascent_m, descent_m, calories, avg_temp)
@@ -463,6 +474,8 @@ def create_workout(name: str, steps: list[dict], date: str | None = None,
                    replace_workout_id: str | None = None) -> str:
     """Create a structured running workout in Garmin Connect and, if date='YYYY-MM-DD',
     schedule it in the calendar so it reaches the watch at the next sync.
+    Upload requires the optional community module (ENABLE_GARMINCONNECT=true): the official
+    Personal API is read-only. The preview works without it.
     Without confirm=true it only returns a preview: show it to the athlete, then call again with confirm=true.
     replace_workout_id: rewrite an existing workout in place (id and calendar dates are kept; don't pass date).
 
@@ -509,7 +522,8 @@ def create_workout(name: str, steps: list[dict], date: str | None = None,
 
 @mcp.tool()
 def get_workout(workout_id: str) -> str:
-    """Show the steps of a workout stored in Garmin Connect (durations, targets, notes)."""
+    """Show the steps of a workout stored in Garmin Connect (durations, targets, notes).
+    Requires the optional community module (ENABLE_GARMINCONNECT=true)."""
     g, err = _garmin_or_error()
     if err:
         return err
@@ -520,7 +534,8 @@ def get_workout(workout_id: str) -> str:
 
 @mcp.tool()
 def list_workouts(months_ahead: int = 1, library_limit: int = 15) -> str:
-    """Workouts scheduled in the Garmin calendar (current month + months_ahead) and latest in the library."""
+    """Workouts scheduled in the Garmin calendar (current month + months_ahead) and latest in the library.
+    Requires the optional community module (ENABLE_GARMINCONNECT=true)."""
     g, err = _garmin_or_error()
     if err:
         return err
@@ -548,7 +563,8 @@ def list_workouts(months_ahead: int = 1, library_limit: int = 15) -> str:
 @mcp.tool()
 def delete_workout(workout_id: str | None = None, scheduled_id: str | None = None) -> str:
     """Remove a workout from the calendar (scheduled_id) and/or delete it from the library (workout_id).
-    Only use when the athlete explicitly asks for it."""
+    Only use when the athlete explicitly asks for it.
+    Requires the optional community module (ENABLE_GARMINCONNECT=true)."""
     g, err = _garmin_or_error()
     if err:
         return err

@@ -11,7 +11,7 @@ def main():
     p = argparse.ArgumentParser(prog="garmin-coach")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("serve", help="run the MCP server + periodic sync (default)")
-    sub.add_parser("login", help="interactive Garmin login (MFA supported)")
+    sub.add_parser("login", help="interactive login for the optional community module (MFA supported)")
     s = sub.add_parser("sync", help="manual sync")
     s.add_argument("--full", action="store_true", help=f"everything since BACKFILL_FROM ({config.BACKFILL_FROM})")
     s.add_argument("--since", help="from YYYY-MM-DD")
@@ -20,6 +20,9 @@ def main():
     a = p.parse_args()
 
     if a.cmd == "login":
+        if not config.ENABLE_GARMINCONNECT:
+            raise SystemExit("The login is only needed for the optional community module (write access).\n"
+                             "Set ENABLE_GARMINCONNECT=true in .env, run `docker compose up -d`, then retry.")
         from .garmin import interactive_login
         interactive_login()
     elif a.cmd == "sync":

@@ -15,8 +15,30 @@ TOKEN_DIR = DATA_DIR / "tokens"
 # Optional personal notes for Claude (sensors, zones, quirks...). Appended to the server instructions.
 ATHLETE_FILE = Path(_env("ATHLETE_FILE", str(DATA_DIR / "athlete.md")))
 
+
+def _flag(name: str, default: bool = False) -> bool:
+    return _env(name, "true" if default else "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+# --- Official Garmin Connect Personal API (READ-ONLY): activities, FIT files, planned workout link
+GARMIN_PERSONAL_API_KEY = os.getenv("GARMIN_PERSONAL_API_KEY") or None
+PERSONAL_API_TOKEN_CACHE = TOKEN_DIR / "personal-api-bearer-token.json"
+
+# --- Optional community module (python-garminconnect, unofficial API): WRITE access
+# Enables structured workouts (create/schedule/delete) and enriches laps with grade-adjusted pace
+# and activities with the shoes assigned in Garmin Connect. Requires an interactive login.
+ENABLE_GARMINCONNECT = _flag("ENABLE_GARMINCONNECT")
 GARMIN_EMAIL = os.getenv("GARMIN_EMAIL") or None
 GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD") or None
+
+
+def read_source() -> str | None:
+    """Where activities are read from: 'official' (preferred), 'garminconnect' (fallback) or None."""
+    if GARMIN_PERSONAL_API_KEY:
+        return "official"
+    if ENABLE_GARMINCONNECT:
+        return "garminconnect"
+    return None
 
 # First import: fetch history from this date on
 BACKFILL_FROM = _env("BACKFILL_FROM", "2024-01-01")

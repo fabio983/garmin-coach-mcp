@@ -131,6 +131,18 @@ def connect(readonly: bool = False) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release: (table, column, type)
+MIGRATIONS = [
+    ("activities", "source", "TEXT"),                 # 'official' or 'garminconnect'
+    ("activities", "planned_workout", "TEXT"),        # name of the planned workout the run came from
+    ("activities", "planned_workout_json", "TEXT"),   # raw JSON from the Personal API
+]
+
+
 def init() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        for table, col, typ in MIGRATIONS:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")

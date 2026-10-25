@@ -1,4 +1,9 @@
-"""Garmin Connect login via python-garminconnect (tokens persisted in DATA_DIR/tokens)."""
+"""Optional community module: python-garminconnect (unofficial Garmin Connect API).
+
+Used only when ENABLE_GARMINCONNECT=true, for what the official Personal API does not offer:
+structured workouts (write access), per-lap grade-adjusted pace and shoes.
+Login tokens are persisted in DATA_DIR/tokens.
+"""
 from __future__ import annotations
 
 import getpass
@@ -13,7 +18,19 @@ log = logging.getLogger(__name__)
 RELOGIN_HINT = "Log in again with: docker compose run --rm garmin-coach login"
 
 
+DISABLED_MSG = (
+    "This needs write access to Garmin Connect, which the official Personal API does not provide "
+    "(it is read-only). Enable the optional community module: set ENABLE_GARMINCONNECT=true in .env, "
+    "run `docker compose up -d`, then `docker compose run --rm garmin-coach login` and "
+    "`docker compose restart`. See the README section 'Write access (optional)'."
+)
+
+
 class AuthRequired(RuntimeError):
+    pass
+
+
+class Disabled(RuntimeError):
     pass
 
 
@@ -24,7 +41,10 @@ def _tokenstore() -> str:
 
 def client() -> Garmin:
     """Authenticated client from saved tokens (refreshed automatically).
-    Raises AuthRequired when tokens are no longer valid and no usable credentials exist."""
+    Raises AuthRequired when tokens are no longer valid and no usable credentials exist,
+    Disabled when the module is not enabled."""
+    if not config.ENABLE_GARMINCONNECT:
+        raise Disabled(DISABLED_MSG)
     g = Garmin(config.GARMIN_EMAIL, config.GARMIN_PASSWORD,
                prompt_mfa=_no_mfa, retry_attempts=3)
     try:

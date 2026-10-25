@@ -1,5 +1,10 @@
 """Garmin Connect -> SQLite sync.
 
+Read source: the official Personal API (read-only) when GARMIN_PERSONAL_API_KEY is set, otherwise the
+optional community module (python-garminconnect) when ENABLE_GARMINCONNECT=true.
+When the community module is enabled it also enriches laps with grade-adjusted pace and activities
+with the shoes assigned in Garmin Connect (data the Personal API does not expose).
+
 - incremental: from the latest stored activity (minus 3 days) to today
 - full/backfill: from BACKFILL_FROM (or a given date)
 For runs it downloads the original FIT file and extracts laps and records.
@@ -15,7 +20,7 @@ from datetime import date, datetime, timedelta
 from garminconnect import Garmin
 from garminconnect.exceptions import GarminConnectTooManyRequestsError
 
-from . import config, db, fitfile, garmin
+from . import config, db, fitfile, garmin, official
 
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
@@ -69,7 +74,8 @@ def _upsert_activity(conn, row: dict) -> bool:
     exists = conn.execute("SELECT 1 FROM activities WHERE activity_id=?",
                           (row["activity_id"],)).fetchone() is not None
     cols = list(row)
-    upd = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "activity_id")
+    # keep existing values when the new source does not provide a field (e.g. vo2max)
+    upd = ", ".join(f"{c}=coalesce(excluded.{c}, {c})" for c in cols if c != "activity_id")
     conn.execute(
         f"INSERT INTO activities ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))}) "
         f"ON CONFLICT(activity_id) DO UPDATE SET {upd}",
@@ -104,23 +110,38 @@ def _gear_name(g: Garmin, aid: int) -> str | None:
     return ", ".join(names) or None
 
 
-def load_details(conn, g: Garmin, aid: int) -> None:
-    blob = g.download_activity(str(aid), dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL)
+def _save_fit(conn, aid: int, blob: bytes) -> None:
     fit_bytes = fitfile.extract_fit(blob)
     config.FIT_DIR.mkdir(parents=True, exist_ok=True)
     path = config.FIT_DIR / f"{aid}.fit"
     path.write_bytes(fit_bytes)
     store_fit(conn, aid, path)
-    time.sleep(config.REQUEST_DELAY_S)
 
-    gap = _gap_by_lap(g, aid)
-    for idx, v in gap.items():
-        conn.execute("UPDATE laps SET gap_speed=? WHERE activity_id=? AND lap_index=?",
-                     (v, aid, idx))
-    time.sleep(config.REQUEST_DELAY_S)
 
-    gear = _gear_name(g, aid)
-    conn.execute("UPDATE activities SET gear=? WHERE activity_id=?", (gear, aid))
+def load_details(conn, aid: int, oc: official.Client | None, g: Garmin | None) -> None:
+    """FIT + laps/records (+ planned workout from the Personal API, + GAP/shoes from the community module)."""
+    if oc is not None:
+        _save_fit(conn, aid, oc.download_activity(aid))
+        time.sleep(config.REQUEST_DELAY_S)
+        planned = oc.activity_workouts(aid)
+        if planned:
+            name = ", ".join(p.get("workoutName") for p in planned if p.get("workoutName")) or None
+            conn.execute("UPDATE activities SET planned_workout=?, planned_workout_json=? WHERE activity_id=?",
+                         (name, json.dumps(planned, ensure_ascii=False), aid))
+        time.sleep(config.REQUEST_DELAY_S)
+    else:
+        _save_fit(conn, aid, g.download_activity(str(aid), dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL))
+        time.sleep(config.REQUEST_DELAY_S)
+
+    if g is not None:
+        for idx, v in _gap_by_lap(g, aid).items():
+            conn.execute("UPDATE laps SET gap_speed=? WHERE activity_id=? AND lap_index=?",
+                         (v, aid, idx))
+        time.sleep(config.REQUEST_DELAY_S)
+        gear = _gear_name(g, aid)
+        if gear:
+            conn.execute("UPDATE activities SET gear=? WHERE activity_id=?", (gear, aid))
+        time.sleep(config.REQUEST_DELAY_S)
 
 
 def store_fit(conn, aid: int, path) -> None:
@@ -167,14 +188,35 @@ def run(since: str | None = None, full: bool = False, redetail: bool = False) ->
     mode = "full" if full else ("since " + since if since else "incremental")
     new, detailed, status, msg = 0, 0, "ok", ""
     new_ids: list[int] = []
+    notes: list[str] = []
+    oc = g = None
+    source = config.read_source()
     try:
-        g = garmin.client()
+        if source is None:
+            raise official.AuthError("No data source configured: set GARMIN_PERSONAL_API_KEY in .env "
+                                     f"(official, read-only). {official.KEY_HINT}")
         start = _start_date(conn, since, full)
         end = date.today().isoformat()
-        log.info("Sync %s: %s -> %s", mode, start, end)
-        acts = g.get_activities_by_date(start, end, sortorder="asc") or []
-        for a in acts:
+        log.info("Sync %s via %s: %s -> %s", mode, source, start, end)
+
+        if source == "official":
+            oc = official.Client()
+            acts = list(oc.activities_since(start))
+        else:
+            g = garmin.client()
+            acts = g.get_activities_by_date(start, end, sortorder="asc") or []
+
+        # optional community module: enrichment (GAP per lap, shoes). Never blocks the sync.
+        if config.ENABLE_GARMINCONNECT and g is None:
+            try:
+                g = garmin.client()
+            except garmin.AuthRequired as e:
+                notes.append(f"community module not logged in, no GAP/shoes ({e})")
+                log.warning("Community module unavailable: %s", e)
+
+        for a in sorted(acts, key=lambda x: x.get("startTimeLocal") or ""):
             row = _summary_row(a)
+            row["source"] = source
             if _upsert_activity(conn, row):
                 new += 1
                 new_ids.append(row["activity_id"])
@@ -190,11 +232,11 @@ def run(since: str | None = None, full: bool = False, redetail: bool = False) ->
             if not config.wants_details(r["type_key"]):
                 continue
             try:
-                load_details(conn, g, r["activity_id"])
+                load_details(conn, r["activity_id"], oc, g)
                 conn.commit()
                 detailed += 1
                 log.info("Details %s (%s) ok", r["activity_id"], r["type_key"])
-            except GarminConnectTooManyRequestsError:
+            except (GarminConnectTooManyRequestsError, official.RateLimited, official.AuthError):
                 raise
             except Exception as e:  # noqa: BLE001
                 conn.rollback()
@@ -203,24 +245,28 @@ def run(since: str | None = None, full: bool = False, redetail: bool = False) ->
                              (r["activity_id"],))
                 conn.commit()
                 log.warning("Details %s failed: %s", r["activity_id"], e)
-            time.sleep(config.REQUEST_DELAY_S)
-        garmin.persist(g)
-        msg = f"{len(acts)} activities read from Garmin ({start} → {end})"
-    except garmin.AuthRequired as e:
+        msg = f"{len(acts)} activities read via {source} ({start} → {end})"
+        if notes:
+            msg += "; " + "; ".join(notes)
+    except (garmin.AuthRequired, official.AuthError) as e:
         status, msg = "auth_required", str(e)
-    except GarminConnectTooManyRequestsError as e:
+    except (GarminConnectTooManyRequestsError, official.RateLimited) as e:
         status, msg = "rate_limited", f"Rate limited by Garmin (429): try again later. {e}"
     except Exception as e:  # noqa: BLE001
         status, msg = "error", f"{type(e).__name__}: {e}"
         log.exception("Sync failed")
     finally:
+        if g is not None:
+            garmin.persist(g)
+        if oc is not None:
+            oc.close()
         conn.execute(
             "INSERT INTO sync_log (started_at, finished_at, mode, new_activities, detailed, status, message) "
             "VALUES (?,?,?,?,?,?,?)", (started, _now(), mode, new, detailed, status, msg))
         conn.commit()
         conn.close()
         _lock.release()
-    return {"status": status, "mode": mode, "new_activities": new, "new_ids": new_ids,
+    return {"status": status, "mode": mode, "source": source, "new_activities": new, "new_ids": new_ids,
             "detailed": detailed, "message": msg}
 
 
